@@ -422,6 +422,39 @@ show_recovery_mode_info() {
   print_line
 }
 
+start_daemon_cautious() {
+  print_line
+  warn "The script can now try to start the daemon again."
+
+  if ! ask_yes_no "Do you want to start the daemon now?"; then
+    warn "Start step skipped by user."
+    return 0
+  fi
+
+  info "Trying systemctl start..."
+  systemctl start "${DEFAULT_SERVICE}" >/dev/null 2>&1 || warn "systemctl start did not succeed."
+  sleep 5
+
+  if pgrep -f "${DEFAULT_DAEMON}" >/dev/null 2>&1; then
+    success "Daemon appears to be running."
+    return 0
+  fi
+
+  warn "Daemon does not appear to be running yet."
+  warn "Trying manual daemon start..."
+
+  "${DEFAULT_DAEMON}" -datadir="${DEFAULT_DATA_DIR}" -conf="${DEFAULT_CONF_FILE}" >/dev/null 2>&1 &
+  sleep 5
+
+  if pgrep -f "${DEFAULT_DAEMON}" >/dev/null 2>&1; then
+    success "Daemon appears to be running after manual start."
+    return 0
+  fi
+
+  error "Daemon still does not appear to be running."
+  return 1
+}
+
 main() {
   show_intro
   check_root
@@ -440,6 +473,7 @@ main() {
   cleanup_recovery_files
   write_trusted_addnodes_to_conf
   show_recovery_mode_info
+  start_daemon_cautious
 
   info "Initial checks completed."
   info "Next versions will add stop/start checks, cleanup, addnode validation and recovery mode."
