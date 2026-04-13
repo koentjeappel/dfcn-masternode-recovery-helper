@@ -339,7 +339,10 @@ check_addnode_heights() {
     run_cli addnode "${node}" onetry >/dev/null 2>&1 || true
     sleep 3
 
-    if run_cli getpeerinfo 2>/dev/null | grep -q "${host}"; then
+    local peer_line
+    peer_line="$(run_cli getpeerinfo 2>/dev/null | grep "${host}" | head -n 1 || true)"
+
+    if [ -n "${peer_line}" ]; then
       success "Peer check passed for ${node}"
       GOOD_ADDNODES+=("${node}")
     else
@@ -347,6 +350,11 @@ check_addnode_heights() {
       BAD_ADDNODES+=("${node}")
     fi
   done
+
+    if [ "${#GOOD_ADDNODES[@]}" -lt 2 ]; then
+    warn "Fewer than 2 trusted addnodes passed the checks."
+    warn "Recovery can still continue, but confidence is lower."
+  fi
 
   print_line
   echo "Good trusted addnodes:"
