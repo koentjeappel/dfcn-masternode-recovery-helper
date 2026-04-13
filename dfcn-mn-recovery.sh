@@ -521,14 +521,13 @@ interactive_monitoring_menu() {
   echo "Use the following keys:"
   echo "  g = get block height"
   echo "  s = show mnsync status"
-  echo "  m = show masternode status"
+  echo "  p = show sync progress"
   echo "  l = show last 30 debug.log lines"
   echo "  x = confirm sync is complete and continue"
-  echo "  q = quit menu"
   print_line
 
   while true; do
-    read -r -p "Choose action [g/s/m/l/x/q]: " action
+    read -r -p "Choose action [g/s/p/l/x]: " action
 
     case "${action}" in
       g|G)
@@ -537,18 +536,14 @@ interactive_monitoring_menu() {
       s|S)
         run_cli mnsync status || warn "mnsync status failed."
         ;;
-      m|M)
-        run_cli masternode status || warn "masternode status failed."
+      p|P)
+        show_sync_progress
         ;;
       l|L)
         tail -n 30 "${DEFAULT_DATA_DIR}/debug.log" || warn "Could not read debug.log."
         ;;
       x|X)
         success "User confirmed sync and monitoring checkpoint."
-        break
-        ;;
-      q|Q)
-        warn "Monitoring menu exited by user."
         break
         ;;
       *)
@@ -558,6 +553,49 @@ interactive_monitoring_menu() {
 
     print_line
   done
+}
+
+show_sync_progress() {
+  local block_height
+  local sync_json
+  local chain_json
+  local asset_name
+  local is_blockchain_synced
+  local is_synced
+  local is_failed
+  local verification_progress
+
+  block_height="$(run_cli getblockcount 2>/dev/null)"
+  sync_json="$(run_cli mnsync status 2>/dev/null)"
+  chain_json="$(run_cli getblockchaininfo 2>/dev/null)"
+
+  asset_name="$(echo "$sync_json" | jq -r '.AssetName // "unknown"' 2>/dev/null)"
+  is_blockchain_synced="$(echo "$sync_json" | jq -r '.IsBlockchainSynced // "unknown"' 2>/dev/null)"
+  is_synced="$(echo "$sync_json" | jq -r '.IsSynced // "unknown"' 2>/dev/null)"
+  is_failed="$(echo "$sync_json" | jq -r '.IsFailed // "unknown"' 2>/dev/null)"
+  verification_progress="$(echo "$chain_json" | jq -r '.verificationprogress // empty' 2>/dev/null)"
+
+  echo "Sync Progress"
+  echo "-------------"
+  echo "Local block height: ${block_height:-unknown}"
+
+  if [[ -n "$verification_progress" && "$verification_progress" != "null" ]]; then
+    awk -v v="$verification_progress" 'BEGIN { printf "Verification progress: %.2f%%\n", v * 100 }'
+  else
+    echo "Verification progress: unknown"
+  fi
+
+  echo "Masternode sync stage: ${asset_name:-unknown}"
+  echo "Blockchain synced: ${is_blockchain_synced:-unknown}"
+  echo "Masternode synced: ${is_synced:-unknown}"
+  echo "Sync failed: ${is_failed:-unknown}"
+  echo
+
+  if [[ "$is_synced" == "true" && "$asset_name" == "MASTERNODE_SYNC_FINISHED" ]]; then
+    success "Sync completed. You can continue with the next recovery step."
+  else
+    warn "Your node is still syncing. Please wait before continuing."
+  fi
 }
 
 run_recovery_mode() {
