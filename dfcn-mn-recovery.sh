@@ -12,6 +12,7 @@ DEFAULT_DAEMON="/usr/local/bin/defcond"
 DEFAULT_SERVICE="defcond"
 DEFAULT_PORT="8192"
 DEFAULT_ADDNODE_FILE="./trusted_addnodes.txt"
+DEFAULT_RECOVERY_MINUTES="180"
 
 print_line() {
   echo "------------------------------------------------------------"
@@ -404,6 +405,23 @@ write_trusted_addnodes_to_conf() {
   success "Verified trusted addnodes were written to defcon.conf."
 }
 
+show_recovery_mode_info() {
+  print_line
+  info "Temporary trusted addnode recovery mode"
+
+  echo "Recovery mode duration (default): ${DEFAULT_RECOVERY_MINUTES} minutes"
+  echo "During this period, only the verified trusted addnodes in defcon.conf should be used."
+  echo "Later, a future version of this helper can restore a broader normal-peer setup."
+
+  if ask_yes_no "Do you want to continue with temporary recovery mode using the verified trusted addnodes?"; then
+    success "Temporary recovery mode confirmed by user."
+  else
+    warn "Temporary recovery mode not confirmed."
+  fi
+
+  print_line
+}
+
 main() {
   show_intro
   check_root
@@ -421,6 +439,7 @@ main() {
   remove_lock_file
   cleanup_recovery_files
   write_trusted_addnodes_to_conf
+  show_recovery_mode_info
 
   info "Initial checks completed."
   info "Next versions will add stop/start checks, cleanup, addnode validation and recovery mode."
