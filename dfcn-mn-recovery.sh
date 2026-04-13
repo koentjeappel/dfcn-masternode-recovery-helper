@@ -198,6 +198,19 @@ check_service_and_process() {
   print_line
 }
 
+backup_conf() {
+  if [ ! -f "${DEFAULT_CONF_FILE}" ]; then
+    warn "Config file not found, skipping backup."
+    return 0
+  fi
+
+  local backup_file
+  backup_file="${DEFAULT_CONF_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+
+  cp "${DEFAULT_CONF_FILE}" "${backup_file}"
+  success "Backup created: ${backup_file}"
+}
+
 main() {
   show_intro
   check_root
@@ -209,6 +222,7 @@ main() {
   check_binaries
   show_local_status
   check_service_and_process
+  backup_conf
 
   info "Initial checks completed."
   info "Next versions will add stop/start checks, cleanup, addnode validation and recovery mode."
