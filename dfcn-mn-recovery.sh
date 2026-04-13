@@ -135,6 +135,20 @@ validate_addnodes() {
   success "All trusted addnodes have a valid basic format."
 }
 
+check_binaries() {
+  if [ ! -x "${DEFAULT_CLI}" ]; then
+    error "defcon-cli was not found or is not executable at: ${DEFAULT_CLI}"
+    exit 1
+  fi
+
+  if [ ! -x "${DEFAULT_DAEMON}" ]; then
+    error "defcond was not found or is not executable at: ${DEFAULT_DAEMON}"
+    exit 1
+  fi
+
+  success "Required binaries were found."
+}
+
 main() {
   show_intro
   check_root
@@ -143,6 +157,7 @@ main() {
   load_addnodes
   show_addnodes
   validate_addnodes
+  check_binaries
 
   info "Initial checks completed."
   info "Next versions will add stop/start checks, cleanup, addnode validation and recovery mode."
