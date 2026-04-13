@@ -529,7 +529,7 @@ interactive_monitoring_menu() {
   echo "Use the following keys:"
   echo "  g = get block height"
   echo "  s = show mnsync status"
-  echo "  p = show sync progress"
+  echo "  p = show sync progress (recommended)"
   echo "  l = show last 30 debug.log lines"
   echo "  x = confirm sync is complete and continue"
   print_line
