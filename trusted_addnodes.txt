@@ -1,0 +1,4 @@
+# One addnode per line
+# Format: IP:8192
+# Example:
+# 127.0.0.1:8192
