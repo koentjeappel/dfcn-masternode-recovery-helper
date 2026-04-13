@@ -455,6 +455,20 @@ start_daemon_cautious() {
   return 1
 }
 
+show_next_steps() {
+  print_line
+  echo "Next steps for the user:"
+  echo
+  echo "1. Wait for the node to sync to the correct chain."
+  echo "2. Check block height regularly."
+  echo "3. Check 'mnsync status' and 'masternode status'."
+  echo "4. Watch debug.log for quorum or fork-related errors."
+  echo "5. If required, run protx update_service from the controller wallet."
+  echo "6. Do not assume recovery is complete immediately after restart."
+  echo "7. Watch the node for several hours to see if PoSe increases again."
+  print_line
+}
+
 main() {
   show_intro
   check_root
@@ -474,6 +488,7 @@ main() {
   write_trusted_addnodes_to_conf
   show_recovery_mode_info
   start_daemon_cautious
+  show_next_steps
 
   info "Initial checks completed."
   info "Next versions will add stop/start checks, cleanup, addnode validation and recovery mode."
