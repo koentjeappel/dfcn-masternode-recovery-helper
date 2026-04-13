@@ -2,7 +2,8 @@
 
 set -u
 
-SCRIPT_VERSION="0.1.0"
+SCRIPT_VERSION="0.2.0"
+
 DEFAULT_DEFCON_USER="defcon"
 DEFAULT_DEFCON_HOME="/home/defcon"
 DEFAULT_DATA_DIR="/home/defcon/.defcon"
@@ -12,7 +13,12 @@ DEFAULT_DAEMON="/usr/local/bin/defcond"
 DEFAULT_SERVICE="defcond"
 DEFAULT_PORT="8192"
 DEFAULT_ADDNODE_FILE="./trusted_addnodes.txt"
-DEFAULT_RECOVERY_MINUTES="180"
+
+MANAGED_START="# BEGIN DFCN RECOVERY HELPER MANAGED ADDNODES"
+MANAGED_END="# END DFCN RECOVERY HELPER MANAGED ADDNODES"
+
+MAX_RANDOM_CANDIDATES=30
+MAX_GOOD_ADDNODES=20
 
 print_line() {
   echo "------------------------------------------------------------"
@@ -42,6 +48,10 @@ ask_yes_no() {
     y|Y|yes|YES) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+run_cli() {
+  "${DEFAULT_CLI}" -datadir="${DEFAULT_DATA_DIR}" -conf="${DEFAULT_CONF_FILE}" "$@"
 }
 
 show_intro() {
@@ -84,9 +94,23 @@ check_files() {
   fi
 
   if [ ! -f "${DEFAULT_CONF_FILE}" ]; then
-    warn "defcon.conf was not found at the default path."
-    warn "You may need to adjust the script later for custom environments."
+    error "Config file not found at: ${DEFAULT_CONF_FILE}"
+    exit 1
   fi
+}
+
+check_binaries() {
+  if [ ! -x "${DEFAULT_CLI}" ]; then
+    error "defcon-cli was not found or is not executable at: ${DEFAULT_CLI}"
+    exit 1
+  fi
+
+  if [ ! -x "${DEFAULT_DAEMON}" ]; then
+    error "defcond was not found or is not executable at: ${DEFAULT_DAEMON}"
+    exit 1
+  fi
+
+  success "Required binaries were found."
 }
 
 load_addnodes() {
@@ -103,7 +127,7 @@ load_addnodes() {
 
   if [ "${#ADDNODES[@]}" -eq 0 ]; then
     warn "No trusted addnodes were found in ${DEFAULT_ADDNODE_FILE}."
-    warn "Please add at least one trusted node before running recovery steps."
+    warn "Please add at least one trusted node before running recovery."
     exit 1
   fi
 }
@@ -134,24 +158,6 @@ validate_addnodes() {
   fi
 
   success "All trusted addnodes have a valid basic format."
-}
-
-check_binaries() {
-  if [ ! -x "${DEFAULT_CLI}" ]; then
-    error "defcon-cli was not found or is not executable at: ${DEFAULT_CLI}"
-    exit 1
-  fi
-
-  if [ ! -x "${DEFAULT_DAEMON}" ]; then
-    error "defcond was not found or is not executable at: ${DEFAULT_DAEMON}"
-    exit 1
-  fi
-
-  success "Required binaries were found."
-}
-
-run_cli() {
-  "${DEFAULT_CLI}" -datadir="${DEFAULT_DATA_DIR}" -conf="${DEFAULT_CONF_FILE}" "$@"
 }
 
 show_local_status() {
@@ -200,16 +206,111 @@ check_service_and_process() {
 }
 
 backup_conf() {
-  if [ ! -f "${DEFAULT_CONF_FILE}" ]; then
-    warn "Config file not found, skipping backup."
-    return 0
-  fi
-
   local backup_file
   backup_file="${DEFAULT_CONF_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
 
   cp "${DEFAULT_CONF_FILE}" "${backup_file}"
   success "Backup created: ${backup_file}"
+}
+
+choose_mode() {
+  print_line
+  echo "Choose mode:"
+  echo "1. Recovery mode"
+  echo "2. Restore normal mode"
+  print_line
+
+  read -r -p "Enter 1 or 2: " SELECTED_MODE
+
+  case "${SELECTED_MODE}" in
+    1) MODE="recovery" ;;
+    2) MODE="restore" ;;
+    *)
+      error "Invalid mode selected."
+      exit 1
+      ;;
+  esac
+}
+
+pick_random_candidates() {
+  CANDIDATES=()
+
+  mapfile -t CANDIDATES < <(printf '%s\n' "${ADDNODES[@]}" | shuf | head -n "${MAX_RANDOM_CANDIDATES}")
+
+  if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+    error "No candidate addnodes were selected."
+    exit 1
+  fi
+
+  print_line
+  info "Random candidate addnodes selected for testing:"
+  for node in "${CANDIDATES[@]}"; do
+    echo " - ${node}"
+  done
+  print_line
+}
+
+check_addnode_candidates() {
+  print_line
+  info "Checking random trusted addnode candidates..."
+
+  GOOD_ADDNODES=()
+  BAD_ADDNODES=()
+
+  for node in "${CANDIDATES[@]}"; do
+    local host
+    local port
+    host="${node%:*}"
+    port="${node##*:}"
+
+    info "Testing ${node}"
+
+    if ! timeout 5 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null; then
+      warn "Port check failed for ${node}"
+      BAD_ADDNODES+=("${node}")
+      continue
+    fi
+
+    run_cli addnode "${node}" onetry >/dev/null 2>&1 || true
+    sleep 3
+
+    if run_cli getpeerinfo 2>/dev/null | grep -q "${host}"; then
+      success "Peer check passed for ${node}"
+      GOOD_ADDNODES+=("${node}")
+    else
+      warn "Peer check failed for ${node}"
+      BAD_ADDNODES+=("${node}")
+    fi
+
+    if [ "${#GOOD_ADDNODES[@]}" -ge "${MAX_GOOD_ADDNODES}" ]; then
+      break
+    fi
+  done
+
+  print_line
+  echo "Good trusted addnodes:"
+  for node in "${GOOD_ADDNODES[@]}"; do
+    echo " - ${node}"
+  done
+
+  echo
+  echo "Rejected addnodes:"
+  for node in "${BAD_ADDNODES[@]}"; do
+    echo " - ${node}"
+  done
+  print_line
+
+  if [ "${#GOOD_ADDNODES[@]}" -eq 0 ]; then
+    error "No usable trusted addnodes passed the checks."
+    exit 1
+  fi
+
+  if [ "${#GOOD_ADDNODES[@]}" -lt 3 ]; then
+    warn "Fewer than 3 good addnodes passed the checks."
+    warn "Recovery can continue, but confidence is lower."
+  fi
+
+  success "Trusted addnode candidate checks completed."
 }
 
 stop_daemon_cautious() {
@@ -224,7 +325,6 @@ stop_daemon_cautious() {
 
   info "Trying RPC stop..."
   run_cli stop >/dev/null 2>&1 || warn "RPC stop did not succeed."
-
   sleep 5
 
   if pgrep -f "${DEFAULT_DAEMON}" >/dev/null 2>&1; then
@@ -253,7 +353,7 @@ stop_daemon_cautious() {
 
   if pgrep -f "${DEFAULT_DAEMON}" >/dev/null 2>&1; then
     error "Daemon still appears to be running."
-    warn "Please investigate manually before continuing with destructive actions."
+    warn "Please investigate manually before continuing."
     return 1
   fi
 
@@ -316,110 +416,55 @@ cleanup_recovery_files() {
   success "Selected recovery files and directories were removed."
 }
 
-check_addnode_heights() {
-  print_line
-  info "Checking trusted addnodes..."
-
-  GOOD_ADDNODES=()
-  BAD_ADDNODES=()
-
-  for node in "${ADDNODES[@]}"; do
-    local host
-    local port
-    host="${node%:*}"
-    port="${node##*:}"
-
-    info "Testing ${node}"
-
-    if ! timeout 5 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null; then
-      warn "Port check failed for ${node}"
-      BAD_ADDNODES+=("${node}")
-      continue
-    fi
-
-    run_cli addnode "${node}" onetry >/dev/null 2>&1 || true
-    sleep 3
-
-    local peer_line
-    peer_line="$(run_cli getpeerinfo 2>/dev/null | grep "${host}" | head -n 1 || true)"
-
-    if [ -n "${peer_line}" ]; then
-      success "Peer check passed for ${node}"
-      GOOD_ADDNODES+=("${node}")
-    else
-      warn "Peer check failed for ${node}"
-      BAD_ADDNODES+=("${node}")
-    fi
-  done
-
-    if [ "${#GOOD_ADDNODES[@]}" -lt 2 ]; then
-    warn "Fewer than 2 trusted addnodes passed the checks."
-    warn "Recovery can still continue, but confidence is lower."
-  fi
-
-  print_line
-  echo "Good trusted addnodes:"
-  for node in "${GOOD_ADDNODES[@]}"; do
-    echo " - ${node}"
-  done
-
-  echo
-  echo "Rejected addnodes:"
-  for node in "${BAD_ADDNODES[@]}"; do
-    echo " - ${node}"
-  done
-  print_line
-
-  if [ "${#GOOD_ADDNODES[@]}" -eq 0 ]; then
-    error "No usable trusted addnodes passed the checks."
-    exit 1
-  fi
-
-  success "Trusted addnode check completed."
-}
-
 write_trusted_addnodes_to_conf() {
   print_line
-  warn "The script can now write the verified trusted addnodes to defcon.conf."
-
-  if [ ! -f "${DEFAULT_CONF_FILE}" ]; then
-    error "Config file not found: ${DEFAULT_CONF_FILE}"
-    return 1
-  fi
+  warn "The script can now write verified trusted addnodes to defcon.conf."
 
   if ! ask_yes_no "Do you want to update defcon.conf with the verified trusted addnodes?"; then
     warn "Config update skipped by user."
     return 0
   fi
 
-  sed -i '/^addnode=/d' "${DEFAULT_CONF_FILE}"
+  cp "${DEFAULT_CONF_FILE}" "${DEFAULT_CONF_FILE}.pre-managed.$(date +%Y%m%d-%H%M%S)"
+
+  awk -v start="${MANAGED_START}" -v end="${MANAGED_END}" '
+    $0 == start {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "${DEFAULT_CONF_FILE}" | sed '/^addnode=/d' > "${DEFAULT_CONF_FILE}.tmp"
 
   {
     echo
-    echo "# Trusted addnodes managed by dfcn-mn-recovery.sh"
+    echo "${MANAGED_START}"
     for node in "${GOOD_ADDNODES[@]}"; do
       echo "addnode=${node}"
     done
-  } >> "${DEFAULT_CONF_FILE}"
+    echo "${MANAGED_END}"
+  } >> "${DEFAULT_CONF_FILE}.tmp"
 
+  mv "${DEFAULT_CONF_FILE}.tmp" "${DEFAULT_CONF_FILE}"
   success "Verified trusted addnodes were written to defcon.conf."
 }
 
-show_recovery_mode_info() {
+restore_normal_mode_conf() {
   print_line
-  info "Temporary trusted addnode recovery mode"
+  warn "Restore mode will remove the recovery helper managed addnode section."
 
-  echo "Recovery mode duration (default): ${DEFAULT_RECOVERY_MINUTES} minutes"
-  echo "During this period, only the verified trusted addnodes in defcon.conf should be used."
-  echo "Later, a future version of this helper can restore a broader normal-peer setup."
-
-  if ask_yes_no "Do you want to continue with temporary recovery mode using the verified trusted addnodes?"; then
-    success "Temporary recovery mode confirmed by user."
-  else
-    warn "Temporary recovery mode not confirmed."
+  if ! ask_yes_no "Do you want to remove the managed trusted addnode section now?"; then
+    warn "Restore step skipped by user."
+    return 0
   fi
 
-  print_line
+  cp "${DEFAULT_CONF_FILE}" "${DEFAULT_CONF_FILE}.pre-restore.$(date +%Y%m%d-%H%M%S)"
+
+  awk -v start="${MANAGED_START}" -v end="${MANAGED_END}" '
+    $0 == start {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "${DEFAULT_CONF_FILE}" > "${DEFAULT_CONF_FILE}.tmp"
+
+  mv "${DEFAULT_CONF_FILE}.tmp" "${DEFAULT_CONF_FILE}"
+  success "Managed trusted addnode section removed from defcon.conf."
 }
 
 start_daemon_cautious() {
@@ -455,18 +500,96 @@ start_daemon_cautious() {
   return 1
 }
 
-show_next_steps() {
+show_protx_placeholder() {
   print_line
-  echo "Next steps for the user:"
+  echo "Controller wallet step:"
   echo
-  echo "1. Wait for the node to sync to the correct chain."
-  echo "2. Check block height regularly."
-  echo "3. Check 'mnsync status' and 'masternode status'."
-  echo "4. Watch debug.log for quorum or fork-related errors."
-  echo "5. If required, run protx update_service from the controller wallet."
-  echo "6. Do not assume recovery is complete immediately after restart."
-  echo "7. Watch the node for several hours to see if PoSe increases again."
+  echo "Run the following command in the controller wallet console after the VPS node is fully synced:"
+  echo
+  echo 'protx update_service "PROTX_HASH" "IP:8192" "BLS_SECRET_KEY" "" "FEE_SOURCE_ADDRESS"'
+  echo
+  echo "Important:"
+  echo " - Run this in the controller wallet, not on the VPS."
+  echo " - Wait for the ProTx transaction to be confirmed."
+  echo " - Only then should you expect the masternode to recover from PoSe-banned state."
   print_line
+}
+
+interactive_monitoring_menu() {
+  print_line
+  echo "Interactive monitoring menu"
+  echo "Use the following keys:"
+  echo "  g = get block height"
+  echo "  s = show mnsync status"
+  echo "  m = show masternode status"
+  echo "  l = show last 30 debug.log lines"
+  echo "  x = confirm sync is complete and continue"
+  echo "  q = quit menu"
+  print_line
+
+  while true; do
+    read -r -p "Choose action [g/s/m/l/x/q]: " action
+
+    case "${action}" in
+      g|G)
+        run_cli getblockcount || warn "getblockcount failed."
+        ;;
+      s|S)
+        run_cli mnsync status || warn "mnsync status failed."
+        ;;
+      m|M)
+        run_cli masternode status || warn "masternode status failed."
+        ;;
+      l|L)
+        tail -n 30 "${DEFAULT_DATA_DIR}/debug.log" || warn "Could not read debug.log."
+        ;;
+      x|X)
+        success "User confirmed sync and monitoring checkpoint."
+        break
+        ;;
+      q|Q)
+        warn "Monitoring menu exited by user."
+        break
+        ;;
+      *)
+        warn "Invalid selection."
+        ;;
+    esac
+
+    print_line
+  done
+}
+
+run_recovery_mode() {
+  load_addnodes
+  show_addnodes
+  validate_addnodes
+  pick_random_candidates
+  check_addnode_candidates
+  show_local_status
+  check_service_and_process
+  backup_conf
+  stop_daemon_cautious || exit 1
+  remove_lock_file
+  cleanup_recovery_files
+  write_trusted_addnodes_to_conf
+  start_daemon_cautious || exit 1
+  interactive_monitoring_menu
+  show_protx_placeholder
+  info "Showing final local status snapshot..."
+  show_local_status
+}
+
+run_restore_mode() {
+  show_local_status
+  check_service_and_process
+  backup_conf
+  stop_daemon_cautious || exit 1
+  remove_lock_file
+  restore_normal_mode_conf
+  start_daemon_cautious || exit 1
+  info "Showing final local status snapshot..."
+  show_local_status
 }
 
 main() {
@@ -474,27 +597,21 @@ main() {
   check_root
   show_defaults
   check_files
-  load_addnodes
-  show_addnodes
-  validate_addnodes
-  check_addnode_heights
   check_binaries
-  show_local_status
-  check_service_and_process
-  backup_conf
-  stop_daemon_cautious
-  remove_lock_file
-  cleanup_recovery_files
-  write_trusted_addnodes_to_conf
-  show_recovery_mode_info
-  start_daemon_cautious
-  show_next_steps
+  choose_mode
 
-  info "Initial checks completed."
-  info "Next versions will add stop/start checks, cleanup, addnode validation and recovery mode."
-
-  info "Showing final local status snapshot..."
-  show_local_status
+  case "${MODE}" in
+    recovery)
+      run_recovery_mode
+      ;;
+    restore)
+      run_restore_mode
+      ;;
+    *)
+      error "Unknown mode."
+      exit 1
+      ;;
+  esac
 
   print_line
   echo "Recovery helper run completed."
